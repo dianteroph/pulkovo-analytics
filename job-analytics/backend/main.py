@@ -34,6 +34,12 @@ except Exception:  # ModuleNotFoundError when running with --app-dir backend
 
 app = FastAPI(title="Job Analytics API")
 
+# Root redirect to dashboard
+from fastapi.responses import RedirectResponse  # placed after app creation to preserve import order
+@app.get("/")
+async def root_redirect():
+    return RedirectResponse(url="/dashboard")
+
 # Cache disabled – no-op storage to avoid stale results during development
 cache: Dict[str, Dict[str, Any]] = {}
 CACHE_TTL = 0
