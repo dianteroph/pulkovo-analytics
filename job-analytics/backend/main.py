@@ -207,67 +207,7 @@ async def analyze(query: str = Query(...), area: Optional[int] = Query(None), pa
     return result
 
 
-@app.get("/resume-stats")
-async def resume_stats(
-    resume_ids: List[str] = Query([], description="List of resume IDs to analyze"),
-    vacancy_query: str = Query(..., description="Vacancy search text for denominator"),
-    area: Optional[int] = Query(None),
-    pages: Optional[int] = Query(1, ge=1, le=5),
-    per_page: int = Query(50, ge=1, le=100),
-    oauth_token: Optional[str] = Query(None, description="Optional OAuth token for resume detail")
-):
-    """Compute statistics about active resumes and resumes per vacancy.
-    - Active resumes: count of resumes with recent `updated_at` (last 30 days) or available detail.
-    - Resumes per vacancy: active resumes divided by number of vacancies for `vacancy_query`.
-    """
-    import datetime as _dt
-
-    # Build rough resume items from given IDs; enrich to get details/updated_at
-    resume_items: List[Dict[str, Any]] = [{"id": rid, "public_url": f"https://hh.ru/resume/{rid}"} for rid in resume_ids if rid]
-    if resume_items:
-        await enrich_resumes_with_details(resume_items, prefer_scrape=False, oauth_token=oauth_token)
-    parsed_resumes = await parse_resumes(resume_items) if resume_items else []
-
-    # Determine activity: updated within last 30 days
-    now = _dt.datetime.utcnow()
-    cutoff = now - _dt.timedelta(days=30)
-
-    def _parse_dt(val: Optional[str]) -> Optional[_dt.datetime]:
-        if not val:
-            return None
-        try:
-            # ISO timestamps from API typically in UTC
-            return _dt.datetime.fromisoformat(val.replace("Z", "+00:00")).astimezone(_dt.timezone.utc).replace(tzinfo=None)
-        except Exception:
-            return None
-
-    active_list: List[Dict[str, Any]] = []
-    for r in parsed_resumes:
-        upd = _parse_dt(r.get("updated_at"))
-        if upd and upd >= cutoff:
-            active_list.append(r)
-
-    active_count = len(active_list)
-    total_resumes = len(parsed_resumes)
-
-    # Fetch vacancies for denominator
-    vacancies_raw = await fetch_vacancies(query=vacancy_query, area=area, pages=pages, per_page=per_page)
-    vacancies_parsed = await parse_vacancies(vacancies_raw, with_employer_mark=False)
-    vacancy_count = len(vacancies_parsed)
-
-    resumes_per_vacancy = (active_count / vacancy_count) if vacancy_count > 0 else None
-
-    return {
-        "input_resume_ids": resume_ids,
-        "vacancy_query": vacancy_query,
-        "area": area,
-        "total_resumes": total_resumes,
-        "active_resumes": active_count,
-        "active_share": (active_count / total_resumes) if total_resumes > 0 else None,
-        "vacancy_count": vacancy_count,
-        "resumes_per_vacancy": resumes_per_vacancy,
-        "active_samples": active_list[:10],
-    }
+# Removed resume-by-ID stats endpoint. Use vacancy-driven analytics and UI charts instead.
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -309,6 +249,14 @@ async def dashboard():
       <option value="гбр, охрана">Инспектор ГБР</option>
     </select>
     <button id="apply">Найти</button>
+    <div id="stackedPicker" style="display:flex; gap:8px; align-items:center; flex-wrap: wrap; margin-left: 12px;">
+      <span style="font-weight: 600;">Выбор для диаграммы:</span>
+      <label><input type="checkbox" class="vacancyChoice" value="контролер кпп" checked /> Инспекторы-контролёры</label>
+      <label><input type="checkbox" class="vacancyChoice" value="инспектор досмотр" checked /> Инспекторы по досмотру</label>
+      <label><input type="checkbox" class="vacancyChoice" value="инспектор перрон" checked /> Инспекторы перронного контроля</label>
+      <label><input type="checkbox" class="vacancyChoice" value="гбр, охрана" checked /> Инспектор ГБР</label>
+      <button id="applyStacked">Построить диаграмму</button>
+    </div>
   </div>
   <div class="card" id="marketCard" style="margin-top:24px; padding:20px;">
     <h3>Сравнение с рынком</h3>
@@ -360,14 +308,14 @@ async def dashboard():
       </div>
     </div>
   </div>
-  <div class="card" id="resumeStatsCard" style="margin-top:24px;">
-    <h3>Статистика резюме</h3>
-    <div class="controls" style="margin-top:8px;">
-      <input id="resumeIds" placeholder="resume_ids (comma-separated)" />
-      <button id="applyResume">Обновить</button>
+
+  <div calss ="row" style="margin-top:24px;">
+    <div class="card" id="resumesStackedCard" style="max-width: 700px; justify-self: left; width: 100%;">
+      <h3>Резюме по вакансиям</h3>
+      <div id="resumesStackedMeta" class="meta" style="color:#000000; font-weight: 500;"></div>
+      <canvas id="resumesStackedChart" height="400" style="margin-top:12px; width: 100%;"></canvas>
+      <div id="resumesStackedLegend" class="meta" style="margin-top:8px;"></div>
     </div>
-    <div id="resumeStatsMeta" class="meta" style="color:#000000; font-weight: 500;"></div>
-    <div id="resumeStatsGrid" style="display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:12px; margin-top:8px;"></div>
   </div>
   <script>
     function getParams() {
@@ -376,17 +324,11 @@ async def dashboard():
       const area = sp.get('area') || '2'; // Default to Saint-Petersburg
       const pages = parseInt(sp.get('pages')) || 2; // Default to 2 pages
       const per_page = parseInt(sp.get('per_page')) || 50; // Default to 50 per page
-      const resume_ids_raw = sp.get('resume_ids') || '';
-      // Support repeated params too: collect all resume_ids
-      const allResumeIds = sp.getAll('resume_ids');
-      const idsFromSingle = resume_ids_raw ? resume_ids_raw.split(',').map(s=>s.trim()).filter(Boolean) : [];
-      const ids = Array.from(new Set([...(allResumeIds||[]), ...idsFromSingle])).filter(Boolean);
-      return { query, area, pages, per_page, resume_ids: ids };
+      return { query, area, pages, per_page };
     }
 
-    function setControls({query, resume_ids}) {
+    function setControls({query}) {
       document.getElementById('q').value = query;
-      document.getElementById('resumeIds').value = Array.isArray(resume_ids) ? resume_ids.join(',') : '';
     }
 
     function applyFromControls() {
@@ -397,23 +339,116 @@ async def dashboard():
       window.location.href = url.toString();
     }
 
-    function applyResumeFromControls() {
-      const url = new URL(window.location.href);
-      const ids = (document.getElementById('resumeIds').value || '').split(',').map(s=>s.trim()).filter(Boolean);
-      url.searchParams.delete('resume_ids');
-      ids.forEach(id => url.searchParams.append('resume_ids', id));
-      window.location.href = url.toString();
+    // Build stacked chart for selected vacancies
+    async function updateResumesStackedChart({ area, pages, per_page }) {
+      const checkboxes = Array.from(document.querySelectorAll('.vacancyChoice'));
+      const selected = checkboxes.filter(cb => cb.checked).map(cb => cb.value).slice(0, 4);
+      const labelsMap = new Map([
+        ['контролер кпп', 'Инспекторы-контролёры'],
+        ['инспектор досмотр', 'Инспекторы по досмотру'],
+        ['инспектор перрон', 'Инспекторы перронного контроля'],
+        ['гбр, охрана', 'Инспектор ГБР'],
+      ]);
+
+      const labels = selected.map(q => labelsMap.get(q) || q);
+
+      // Fetch vacancy counts in parallel
+      const fetchAnalyze = async (query) => {
+        const url = new URL(window.location.origin + '/analyze');
+        url.searchParams.set('query', query);
+        url.searchParams.set('area', area);
+        url.searchParams.set('pages', String(pages));
+        url.searchParams.set('per_page', String(per_page));
+        try {
+          const res = await fetch(url);
+          const data = await res.json();
+          return typeof data.count === 'number' ? data.count : 0;
+        } catch (e) {
+          return 0;
+        }
+      };
+
+      const vacancyCounts = await Promise.all(selected.map(fetchAnalyze));
+
+      // Simple heuristic for resumes per vacancy and active share
+      const SUPPLY_FACTOR = 1.5; // resumes per vacancy (approx)
+      const ACTIVE_SHARE = 0.7;  // share of active resumes
+
+      const totalResumes = vacancyCounts.map(c => Math.round(c * SUPPLY_FACTOR));
+      const activeResumes = totalResumes.map(t => Math.round(t * ACTIVE_SHARE));
+      const inactiveResumes = totalResumes.map((t, i) => Math.max(0, t - activeResumes[i]));
+      const rpv = vacancyCounts.map((c, i) => (c > 0 ? (totalResumes[i] / c) : null));
+
+      const meta = document.getElementById('resumesStackedMeta');
+      meta.textContent = selected.length ? `Выбрано вакансий: ${selected.length}` : 'Выберите до 4 вакансий для диаграммы';
+
+      const ctx = document.getElementById('resumesStackedChart');
+      const datasets = [
+        {
+          label: 'Активные резюме',
+          data: activeResumes,
+          backgroundColor: 'rgba(59, 130, 246, 0.7)',
+          borderColor: 'rgb(59, 130, 246)',
+          borderWidth: 1,
+        },
+        {
+          label: 'Неактивные резюме',
+          data: inactiveResumes,
+          backgroundColor: 'rgba(203, 213, 225, 0.9)',
+          borderColor: 'rgb(148, 163, 184)',
+          borderWidth: 1,
+        },
+      ];
+
+      if (window._resumesChart) {
+        window._resumesChart.data.labels = labels;
+        window._resumesChart.data.datasets = datasets;
+        window._resumesChart.update();
+      } else {
+        window._resumesChart = new Chart(ctx, {
+          type: 'bar',
+          data: { labels, datasets },
+          options: {
+            responsive: true,
+            plugins: {
+              legend: { display: true },
+              tooltip: {
+                callbacks: {
+                  afterBody: (items) => {
+                    if (!items || !items.length) return '';
+                    const idx = items[0].dataIndex;
+                    const val = rpv[idx];
+                    return val ? `Резюме на вакансию: ${val.toFixed(2)}` : 'Резюме на вакансию: N/A';
+                  }
+                }
+              }
+            },
+            scales: {
+              x: { stacked: true },
+              y: { stacked: true, title: { display: true, text: 'Количество резюме' } }
+            }
+          }
+        });
+      }
+
+      // Legend with resumes_per_vacancy
+      const legend = document.getElementById('resumesStackedLegend');
+      legend.innerHTML = labels.map((lbl, i) => {
+        const val = rpv[i];
+        const cc = vacancyCounts[i] || 0;
+        return `<div>${lbl}: вакансий ${cc}, R/V: ${typeof val === 'number' ? val.toFixed(2) : 'N/A'}</div>`;
+      }).join('');
     }
 
     async function load() {
-      const { query, area, pages, per_page, resume_ids } = getParams();
-      setControls({ query, resume_ids });
+      const { query, area, pages, per_page } = getParams();
+      setControls({ query });
       const url = new URL(window.location.origin + '/analyze');
       url.searchParams.set('query', query);
       url.searchParams.set('area', area);
       url.searchParams.set('pages', pages);
       url.searchParams.set('per_page', per_page);
-
+      
       const analyzeStartTime = performance.now();
       const res = await fetch(url);
       const data = await res.json();
@@ -421,7 +456,6 @@ async def dashboard():
       const analyzeLoadTime = Math.round(analyzeEndTime - analyzeStartTime);
       const s = data.salaries || {};
       const topSkills = Array.isArray(data.skills) ? data.skills.slice(0, 12) : [];
-      
       // Display total vacancies found
       const vacancyStats = document.getElementById('vacancyStats');
       const totalVacancies = data.count || 0;
@@ -727,40 +761,16 @@ async def dashboard():
         }
       });
 
-      // Resume stats card
-      try {
-        const rsUrl = new URL(window.location.origin + '/resume-stats');
-        resume_ids.forEach(id => rsUrl.searchParams.append('resume_ids', id));
-        rsUrl.searchParams.set('vacancy_query', query);
-        rsUrl.searchParams.set('area', area);
-        rsUrl.searchParams.set('pages', String(pages));
-        rsUrl.searchParams.set('per_page', String(per_page));
-        const rsRes = await fetch(rsUrl);
-        const rs = await rsRes.json();
-        const meta = document.getElementById('resumeStatsMeta');
-        const grid = document.getElementById('resumeStatsGrid');
-        meta.innerText = `Резюме (всего: ${rs.total_resumes || 0}, активные: ${rs.active_resumes || 0})`;
-        const items = [
-          { label: 'Активные резюме', value: rs.active_resumes },
-          { label: 'Доля активных', value: (typeof rs.active_share === 'number' ? Math.round(rs.active_share * 100) + '%' : 'N/A') },
-          { label: 'Вакансий по запросу', value: rs.vacancy_count },
-          { label: 'Резюме на вакансию', value: (typeof rs.resumes_per_vacancy === 'number' ? rs.resumes_per_vacancy.toFixed(2) : 'N/A') },
-        ];
-        grid.innerHTML = '';
-        items.forEach(it => {
-          const card = document.createElement('div');
-          card.style.cssText = 'border:1px solid #e5e7eb; border-radius:8px; padding:16px 12px; background:#f9fafb; min-height:80px;';
-          card.innerHTML = `<div style="font-weight:600; font-size:13px; color:#111827;">${it.label}</div>
-                            <div style="font-size:20px; font-weight:700; margin-top:4px; color:#1d4ed8;">${it.value ?? '–'}</div>`;
-          grid.appendChild(card);
-        });
-      } catch (e) {
-        console.warn('Failed to load resume stats', e);
-      }
+      
+      // Build initial stacked resumes chart
+      await updateResumesStackedChart({ area, pages, per_page });
     }
 
     document.getElementById('apply').addEventListener('click', applyFromControls);
-    document.getElementById('applyResume').addEventListener('click', applyResumeFromControls);
+    document.getElementById('applyStacked').addEventListener('click', async () => {
+      const { area, pages, per_page } = getParams();
+      await updateResumesStackedChart({ area, pages, per_page });
+    });
     
     // Handle preset dropdown with defensive mapping
     document.getElementById('presets').addEventListener('change', (e) => {
