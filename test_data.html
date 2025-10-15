@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Embedded Data</title>
+</head>
+<body>
+    <h1>Test Embedded Data</h1>
+    <div id="output"></div>
+    
+    <script>
+        // Test the embedded data
+        const EMBEDDED_VACANCY_DATA = {
+            "query":"python",
+            "area":2,
+            "count":100,
+            "salaries":{"count":49,"avg":131234.69,"median":125000.0,"min":40000.0,"max":400000.0},
+            "skills":[
+                {"name":"Python","count":45,"percentage":45.0},
+                {"name":"Django","count":32,"percentage":32.0}
+            ],
+            "points": [
+                {"salary_avg": 120000, "employer_rating": 4.2, "isPulkovo": true, "employer_name": "Аэропорт Пулково", "salary_per_shift": false},
+                {"salary_avg": 180000, "employer_rating": 4.8, "isPulkovo": false, "employer_name": "Яндекс", "salary_per_shift": false}
+            ]
+        };
+        
+        const EMBEDDED_RESUME_DATA = {
+            "total_resumes":30,
+            "active_resumes":11,
+            "active_share":0.36666666666666664,
+            "vacancy_count":100,
+            "resumes_per_vacancy":0.11
+        };
+        
+        document.getElementById('output').innerHTML = `
+            <h2>Vacancy Data:</h2>
+            <p>Query: ${EMBEDDED_VACANCY_DATA.query}</p>
+            <p>Count: ${EMBEDDED_VACANCY_DATA.count}</p>
+            <p>Average Salary: ${EMBEDDED_VACANCY_DATA.salaries.avg.toLocaleString()}₽</p>
+            <p>Skills: ${EMBEDDED_VACANCY_DATA.skills.length}</p>
+            <p>Points: ${EMBEDDED_VACANCY_DATA.points.length}</p>
+            
+            <h2>Resume Data:</h2>
+            <p>Total Resumes: ${EMBEDDED_RESUME_DATA.total_resumes}</p>
+            <p>Active Resumes: ${EMBEDDED_RESUME_DATA.active_resumes}</p>
+            <p>Active Share: ${(EMBEDDED_RESUME_DATA.active_share * 100).toFixed(1)}%</p>
+        `;
+    </script>
+</body>
+</html>
+
+
+
+
